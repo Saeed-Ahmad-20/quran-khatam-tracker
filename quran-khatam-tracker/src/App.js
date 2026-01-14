@@ -2,20 +2,76 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from './supabaseClient';
 import './App.css';
 
+// --- COMPONENT: EXPANDABLE KHATAM (Level 2) ---
+const KhatamGroup = ({ khatamNum, monthName, entries }) => {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <div style={{ marginBottom: '10px', border: '1px solid #ddd', borderRadius: '5px', overflow: 'hidden' }}>
+      <button 
+        onClick={() => setIsOpen(!isOpen)}
+        style={{ width: '100%', padding: '10px', background: '#f1f3f5', border: 'none', textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+      >
+        <strong>Khatam #{khatamNum}</strong>
+        <span style={{ fontSize: '0.8rem', color: '#666' }}>{isOpen ? '▲' : '▼'}</span>
+      </button>
+      
+      {isOpen && (
+        <div style={{ padding: '10px', background: 'white', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: '8px' }}>
+          {entries.sort((a,b) => a.juz_number - b.juz_number).map(entry => (
+            <div key={entry.id} style={{ fontSize: '0.85rem', padding: '4px 6px', border: '1px solid #eee', borderRadius: '4px', background: '#fafafa' }}>
+              <b style={{ color: '#2c3e50' }}>{entry.juz_number}:</b> {entry.name}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- COMPONENT: EXPANDABLE MONTH (Level 1) ---
+const MonthGroup = ({ monthName, entries }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const uniqueKhatams = [...new Set(entries.map(e => e.khatam_number))].sort((a, b) => b - a);
+
+  return (
+    <div style={{ marginBottom: '15px' }}>
+      <button 
+        onClick={() => setIsOpen(!isOpen)}
+        style={{ width: '100%', padding: '12px', background: '#2c3e50', color: 'white', border: 'none', borderRadius: '5px', textAlign: 'left', cursor: 'pointer', fontSize: '1rem', fontWeight: 'bold', display: 'flex', justifyContent: 'space-between' }}
+      >
+        <span>📂 {monthName} <span style={{ fontWeight: 'normal', opacity: 0.8, fontSize: '0.9rem' }}>({uniqueKhatams.length} Khatams)</span></span>
+        <span>{isOpen ? '▲' : '▼'}</span>
+      </button>
+
+      {isOpen && (
+        <div style={{ padding: '10px 0 0 10px', borderLeft: '3px solid #eee', marginLeft: '10px' }}>
+          {uniqueKhatams.map(kNum => (
+            <KhatamGroup 
+              key={kNum} 
+              khatamNum={kNum} 
+              monthName={monthName}
+              entries={entries.filter(e => e.khatam_number === kNum)} 
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- MAIN APP ---
 function App() {
-  // --- STATE ---
   const [juzs, setJuzs] = useState([]);
   const [meta, setMeta] = useState({ khatam_count: 0, last_month: '' });
   const [selected, setSelected] = useState([]);
   const [loading, setLoading] = useState(true);
   const [currentHijriMonth, setCurrentHijriMonth] = useState('');
   const [userName, setUserName] = useState('');
-  
-  // HISTORY STATE
   const [showHistory, setShowHistory] = useState(false);
   const [historyData, setHistoryData] = useState([]);
 
-  // --- 1. GET ACCURATE HIJRI DATE ---
+  // --- 1. API: GET ACCURATE HIJRI DATE ---
   const getHijriDate = async () => {
     try {
       const today = new Date();
@@ -27,33 +83,26 @@ function App() {
     return new Intl.DateTimeFormat('en-u-ca-islamic', { month: 'long' }).format(Date.now());
   };
 
-  // --- 2. ARCHIVE & RESET ---
+  // --- 2. ARCHIVE & RESET LOGIC ---
   const archiveAndReset = async (currentCount, monthName) => {
     setLoading(true);
-
-    // A. ARCHIVE: Get all current names and save to history
     const { data: currentJuzs } = await supabase.from('khatam_tracker').select('*');
     
-    // Prepare rows for history table
     const historyRows = currentJuzs.map(j => ({
-      khatam_number: currentCount, // This is the Khatam we just finished
+      khatam_number: currentCount,
       juz_number: j.juz_number,
       name: j.name || 'Anonymous',
       month_name: monthName
     }));
 
     await supabase.from('khatam_history').insert(historyRows);
-
-    // B. RESET: Wipe the board
     await supabase.from('khatam_tracker').update({ status: '', name: '' }).neq('id', 0);
-    
-    // C. UPDATE COUNT
     await supabase.from('khatam_metadata').update({ khatam_count: currentCount, last_month: monthName }).eq('id', 1);
     
     window.location.reload();
   };
 
-  // --- 3. FETCH DATA ---
+  // --- 3. DATA FETCHING ---
   const fetchData = useCallback(async () => {
     try {
       const hijriMonthName = await getHijriDate();
@@ -66,7 +115,6 @@ function App() {
 
       if (metaData) {
         if (metaData.last_month && metaData.last_month !== hijriMonthName) {
-           // New Month: Reset but DON'T archive (assuming unused board)
            await supabase.from('khatam_tracker').update({ status: '', name: '' }).neq('id', 0);
            await supabase.from('khatam_metadata').update({ khatam_count: 0, last_month: hijriMonthName }).eq('id', 1);
            window.location.reload();
@@ -78,19 +126,16 @@ function App() {
     finally { setLoading(false); }
   }, []);
 
-  // --- 4. FETCH HISTORY ---
+  // --- 4. HISTORY FETCHING ---
   const fetchHistory = async () => {
-    const { data } = await supabase
-      .from('khatam_history')
-      .select('*')
-      .order('khatam_number', { ascending: false }) // Newest Khatams first
-      .order('juz_number', { ascending: true });
-    
-    setHistoryData(data || []);
+    if (!showHistory) {
+      const { data } = await supabase.from('khatam_history').select('*');
+      setHistoryData(data || []);
+    }
     setShowHistory(!showHistory);
   };
 
-  // --- 5. LISTENERS ---
+  // --- 5. SUBSCRIPTION ---
   useEffect(() => {
     fetchData();
     const subscription = supabase
@@ -127,19 +172,20 @@ function App() {
       return;
     }
 
-    // Check Completion
     const { data } = await supabase.from('khatam_tracker').select('status');
     const takenCount = data ? data.filter(r => r.status === 'taken').length : 0;
 
     if (takenCount === 30) {
-      alert(`Mabrook! Khatam #${(meta.khatam_count || 0) + 1} Completed! archiving...`);
-      // Pass the NEW count number to archive
+      // --- CHANGED MESSAGE HERE ---
+      alert("Mubarak on Completing a Khatam");
+      
       await archiveAndReset((meta.khatam_count || 0) + 1, currentHijriMonth);
     } else {
       window.location.reload();
     }
   };
 
+  const getUniqueMonths = () => [...new Set(historyData.map(item => item.month_name))];
   const takenCount = juzs ? juzs.filter(j => j.status === 'taken').length : 0;
   const progress = (takenCount / 30) * 100;
 
@@ -150,37 +196,28 @@ function App() {
       <h1>📖 {currentHijriMonth} Khatam</h1>
       <h3>Khatams Completed: {meta?.khatam_count || 0}</h3>
 
-      {/* VIEW HISTORY BUTTON */}
       <button 
         onClick={fetchHistory}
-        style={{ marginBottom: '20px', padding: '8px 16px', background: '#6c757d', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}
+        style={{ marginBottom: '20px', padding: '10px 20px', background: '#6c757d', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '1rem' }}
       >
-        {showHistory ? "Hide History" : "📜 View Past Khatams"}
+        {showHistory ? "← Back to Tracker" : "📜 View Past Khatams"}
       </button>
 
-      {/* HISTORY SECTION */}
       {showHistory && (
-        <div style={{ textAlign: 'left', background: '#f8f9fa', padding: '15px', borderRadius: '10px', marginBottom: '20px', maxHeight: '300px', overflowY: 'auto' }}>
-          <h3>History Archive</h3>
-          {historyData.length === 0 ? <p>No history yet.</p> : (
-            // Group by Khatam Number
-            [...new Set(historyData.map(i => i.khatam_number))].map(kNum => (
-              <div key={kNum} style={{ marginBottom: '15px', borderBottom: '1px solid #ddd', paddingBottom: '10px' }}>
-                <strong style={{ color: '#2c3e50' }}>Khatam #{kNum} ({historyData.find(d => d.khatam_number === kNum).month_name})</strong>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '5px', marginTop: '5px', fontSize: '0.8rem' }}>
-                  {historyData.filter(h => h.khatam_number === kNum).map(h => (
-                    <div key={h.id} style={{ background: '#fff', padding: '2px 5px', border: '1px solid #eee' }}>
-                      <b>{h.juz_number}:</b> {h.name}
-                    </div>
-                  ))}
-                </div>
-              </div>
+        <div style={{ textAlign: 'left', background: '#f8f9fa', padding: '15px', borderRadius: '10px', marginBottom: '20px', maxHeight: '500px', overflowY: 'auto' }}>
+          <h2 style={{marginTop: 0, color: '#333'}}>History Archive</h2>
+          {historyData.length === 0 ? <p>No history records found.</p> : (
+            getUniqueMonths().map(month => (
+              <MonthGroup 
+                key={month} 
+                monthName={month} 
+                entries={historyData.filter(d => d.month_name === month)} 
+              />
             ))
           )}
         </div>
       )}
 
-      {/* MAIN TRACKER UI */}
       {!showHistory && (
         <>
           <p>Select your Juz, enter name, and Claim.</p>
@@ -211,7 +248,13 @@ function App() {
           <p>{takenCount} / 30 Juz Taken</p>
 
           <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <input type="text" placeholder="Enter your name..." value={userName} onChange={(e) => setUserName(e.target.value)} style={{ padding: '15px', fontSize: '1.1rem', borderRadius: '10px', border: '2px solid #ccc', textAlign: 'center' }} />
+            <input 
+              type="text" 
+              placeholder="Enter your name..." 
+              value={userName} 
+              onChange={(e) => setUserName(e.target.value)} 
+              style={{ padding: '15px', fontSize: '1.1rem', borderRadius: '10px', border: '2px solid #ccc', textAlign: 'center' }} 
+            />
             <button className="claim-btn" disabled={selected.length === 0} onClick={handleClaim}>Confirm & Claim ({selected.length})</button>
           </div>
         </>
