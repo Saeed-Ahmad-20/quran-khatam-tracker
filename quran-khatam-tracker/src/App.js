@@ -8,63 +8,53 @@ function App() {
   const [meta, setMeta] = useState({ khatam_count: 0, last_month: '' });
   const [selected, setSelected] = useState([]);
   const [loading, setLoading] = useState(true);
-  
-  // Store the calculated month in state since we fetch it async
   const [currentHijriMonth, setCurrentHijriMonth] = useState('');
+  
+  // NEW: State for the user's name
+  const [userName, setUserName] = useState('');
 
   // --- 1. GET ACCURATE HIJRI DATE (API) ---
   const getHijriDate = async () => {
     try {
       const today = new Date();
-      // Format: DD-MM-YYYY
       const dateStr = `${today.getDate()}-${today.getMonth() + 1}-${today.getFullYear()}`;
-      
-      // Fetch from Aladhan API
       const response = await fetch(`https://api.aladhan.com/v1/gToH?date=${dateStr}`);
       const data = await response.json();
-      
-      if (data && data.data && data.data.hijri) {
-        return data.data.hijri.month.en; // Returns "Rajab", "Sha'ban", etc.
-      }
+      if (data?.data?.hijri?.month?.en) return data.data.hijri.month.en;
     } catch (e) {
-      console.warn("API failed, falling back to device date", e);
+      console.warn("API failed", e);
     }
-    // Fallback if API fails: Use device's best guess
     return new Intl.DateTimeFormat('en-u-ca-islamic', { month: 'long' }).format(Date.now());
   };
 
   // --- 2. RESET HELPER ---
   const fullReset = async (currentCount, monthName) => {
     setLoading(true);
-    await supabase.from('khatam_tracker').update({ status: '' }).neq('id', 0);
+    // Reset status AND name
+    await supabase.from('khatam_tracker').update({ status: '', name: '' }).neq('id', 0);
     await supabase.from('khatam_metadata').update({ khatam_count: currentCount, last_month: monthName }).eq('id', 1);
     window.location.reload();
   };
 
-  // --- 3. FETCH DATA & CHECK MONTH ---
+  // --- 3. FETCH DATA ---
   const fetchData = useCallback(async () => {
     try {
-      // A. Determine Month First
       const hijriMonthName = await getHijriDate();
       setCurrentHijriMonth(hijriMonthName);
 
-      // B. Fetch Juz Data
       const { data: juzData, error: juzError } = await supabase
         .from('khatam_tracker').select('*').order('juz_number');
       if (juzError) throw juzError;
       if (juzData) setJuzs(juzData);
 
-      // C. Fetch Metadata
       const { data: metaData, error: metaError } = await supabase
         .from('khatam_metadata').select('*').eq('id', 1).single();
 
       if (metaError) {
         setMeta({ khatam_count: 0, last_month: hijriMonthName });
       } else {
-        // D. Auto-Reset Logic
         if (metaData.last_month && metaData.last_month !== hijriMonthName) {
-          // New month detected! Reset everything.
-          await supabase.from('khatam_tracker').update({ status: '' }).neq('id', 0);
+          await supabase.from('khatam_tracker').update({ status: '', name: '' }).neq('id', 0);
           await supabase.from('khatam_metadata').update({ khatam_count: 0, last_month: hijriMonthName }).eq('id', 1);
           window.location.reload();
         } else {
@@ -97,10 +87,23 @@ function App() {
 
   const handleClaim = async () => {
     if (selected.length === 0) return;
-    const toClaim = [...selected];
-    setSelected([]); 
+    
+    // VALIDATION: Name is required
+    if (!userName.trim()) {
+      alert("Please enter your name first!");
+      return;
+    }
 
-    const { error } = await supabase.from('khatam_tracker').update({ status: 'taken' }).in('juz_number', toClaim);
+    const toClaim = [...selected];
+    const nameToSave = userName; // Capture name at this moment
+    setSelected([]); 
+    setUserName(''); // Clear input
+
+    // Update DB with STATUS and NAME
+    const { error } = await supabase
+      .from('khatam_tracker')
+      .update({ status: 'taken', name: nameToSave })
+      .in('juz_number', toClaim);
     
     if (error) {
       alert("❌ Error: " + error.message);
@@ -108,6 +111,7 @@ function App() {
       return;
     }
 
+    // Check Completion
     const { data } = await supabase.from('khatam_tracker').select('status');
     const takenCount = data ? data.filter(r => r.status === 'taken').length : 0;
 
@@ -128,11 +132,11 @@ function App() {
     <div className="app-container">
       <h1>📖 {currentHijriMonth} Khatam</h1>
       <h3>Khatams Completed: {meta?.khatam_count || 0}</h3>
-      <p>Select your Juz and press Claim.</p>
+      <p>Select your Juz, enter name, and Claim.</p>
 
       {juzs.length === 0 && (
         <div style={{ color: 'red', border: '1px solid red', padding: '10px' }}>
-          <strong>Error: No Juz found.</strong> Run the SQL INSERT command in Supabase.
+          <strong>Error: No Juz found.</strong> Run the SQL INSERT command.
         </div>
       )}
 
@@ -148,7 +152,15 @@ function App() {
               className={`juz-box ${isSelected ? 'selected' : ''}`}
               onClick={() => toggleSelect(juz.juz_number)}
             >
-              {juz.juz_number} {isSelected && "✔"}
+              {/* SHOW NUMBER OR NAME */}
+              {isTaken ? (
+                <span style={{fontSize: '0.9rem', color: '#555'}}>
+                  {juz.juz_number}<br/>
+                  <small>{juz.name ? juz.name.substring(0, 8) : 'Taken'}</small>
+                </span>
+              ) : (
+                <span>{juz.juz_number} {isSelected && "✔"}</span>
+              )}
             </button>
           );
         })}
@@ -159,13 +171,30 @@ function App() {
       </div>
       <p>{takenCount} / 30 Juz Taken</p>
 
-      <button 
-        className="claim-btn" 
-        disabled={selected.length === 0} 
-        onClick={handleClaim}
-      >
-        Confirm & Claim ({selected.length})
-      </button>
+      {/* NAME INPUT SECTION */}
+      <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <input
+          type="text"
+          placeholder="Enter your name..."
+          value={userName}
+          onChange={(e) => setUserName(e.target.value)}
+          style={{
+            padding: '15px',
+            fontSize: '1.1rem',
+            borderRadius: '10px',
+            border: '2px solid #ccc',
+            textAlign: 'center'
+          }}
+        />
+        
+        <button 
+          className="claim-btn" 
+          disabled={selected.length === 0} 
+          onClick={handleClaim}
+        >
+          Confirm & Claim ({selected.length})
+        </button>
+      </div>
     </div>
   );
 }
