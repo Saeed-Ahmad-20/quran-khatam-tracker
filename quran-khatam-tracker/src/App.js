@@ -8,53 +8,32 @@ function App() {
   const [meta, setMeta] = useState({ khatam_count: 0, last_month: '' });
   const [selected, setSelected] = useState([]);
   const [loading, setLoading] = useState(true);
+  
+  // Store the calculated month in state since we fetch it async
+  const [currentHijriMonth, setCurrentHijriMonth] = useState('');
 
-  // --- HELPER: ROBUST HIJRI DATE CALCULATOR ---
-  // This replaces the browser's buggy "Intl" function
-  const getHijriMonth = () => {
-    const today = new Date();
-    const day = today.getDate();
-    const month = today.getMonth(); // 0-11
-    const year = today.getFullYear();
-
-    let m = month + 1;
-    let y = year;
-    if (m < 3) { y -= 1; m += 12; }
-
-    let a = Math.floor(y / 100);
-    let b = 2 - a + Math.floor(a / 4);
-    if (y < 1583) b = 0;
-    if (y === 1582) {
-      if (m > 10) b = -10;
-      if (m === 10) {
-        b = 0;
-        if (day > 4) b = -10;
+  // --- 1. GET ACCURATE HIJRI DATE (API) ---
+  const getHijriDate = async () => {
+    try {
+      const today = new Date();
+      // Format: DD-MM-YYYY
+      const dateStr = `${today.getDate()}-${today.getMonth() + 1}-${today.getFullYear()}`;
+      
+      // Fetch from Aladhan API
+      const response = await fetch(`https://api.aladhan.com/v1/gToH?date=${dateStr}`);
+      const data = await response.json();
+      
+      if (data && data.data && data.data.hijri) {
+        return data.data.hijri.month.en; // Returns "Rajab", "Sha'ban", etc.
       }
+    } catch (e) {
+      console.warn("API failed, falling back to device date", e);
     }
-
-    const jd = Math.floor(365.25 * (y + 4716)) + Math.floor(30.6001 * (m + 1)) + day + b - 1524;
-
-    const b0 = 0;
-    const days = 354.367068;
-    const months = 29.5305879;
-    const index = Math.floor((jd - 2151969.5) / days);
-    const h_year = Math.floor(index / 30) + 1700;
-    const h_month_index = Math.floor((jd - 2151969.5 - index * days) / months);
-    
-    // List of Month Names
-    const iMonthNames = [
-      "Muharram", "Safar", "Rabi' al-Awwal", "Rabi' al-Thani",
-      "Jumada al-Awwal", "Jumada al-Thani", "Rajab", "Sha'ban",
-      "Ramadan", "Shawwal", "Dhu al-Qi'dah", "Dhu al-Hijjah"
-    ];
-
-    return iMonthNames[h_month_index % 12];
+    // Fallback if API fails: Use device's best guess
+    return new Intl.DateTimeFormat('en-u-ca-islamic', { month: 'long' }).format(Date.now());
   };
 
-  // USE THE NEW FUNCTION
-  const currentHijriMonth = getHijriMonth();
-
-  // --- 1. RESET HELPER ---
+  // --- 2. RESET HELPER ---
   const fullReset = async (currentCount, monthName) => {
     setLoading(true);
     await supabase.from('khatam_tracker').update({ status: '' }).neq('id', 0);
@@ -62,26 +41,31 @@ function App() {
     window.location.reload();
   };
 
-  // --- 2. FETCH DATA ---
+  // --- 3. FETCH DATA & CHECK MONTH ---
   const fetchData = useCallback(async () => {
     try {
-      // Fetch Juz
+      // A. Determine Month First
+      const hijriMonthName = await getHijriDate();
+      setCurrentHijriMonth(hijriMonthName);
+
+      // B. Fetch Juz Data
       const { data: juzData, error: juzError } = await supabase
         .from('khatam_tracker').select('*').order('juz_number');
       if (juzError) throw juzError;
       if (juzData) setJuzs(juzData);
 
-      // Fetch Metadata
+      // C. Fetch Metadata
       const { data: metaData, error: metaError } = await supabase
         .from('khatam_metadata').select('*').eq('id', 1).single();
 
       if (metaError) {
-        setMeta({ khatam_count: 0, last_month: currentHijriMonth });
+        setMeta({ khatam_count: 0, last_month: hijriMonthName });
       } else {
-        // Auto-Reset Check
-        if (metaData.last_month && metaData.last_month !== currentHijriMonth) {
+        // D. Auto-Reset Logic
+        if (metaData.last_month && metaData.last_month !== hijriMonthName) {
+          // New month detected! Reset everything.
           await supabase.from('khatam_tracker').update({ status: '' }).neq('id', 0);
-          await supabase.from('khatam_metadata').update({ khatam_count: 0, last_month: currentHijriMonth }).eq('id', 1);
+          await supabase.from('khatam_metadata').update({ khatam_count: 0, last_month: hijriMonthName }).eq('id', 1);
           window.location.reload();
         } else {
           setMeta(metaData);
@@ -92,9 +76,9 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [currentHijriMonth]);
+  }, []);
 
-  // --- 3. LISTENERS ---
+  // --- 4. LISTENERS ---
   useEffect(() => {
     fetchData();
     const subscription = supabase
@@ -105,7 +89,7 @@ function App() {
     return () => { supabase.removeChannel(subscription); };
   }, [fetchData]);
 
-  // --- 4. ACTIONS ---
+  // --- 5. ACTIONS ---
   const toggleSelect = (num) => {
     if (selected.includes(num)) setSelected(selected.filter(n => n !== num));
     else setSelected([...selected, num]);
